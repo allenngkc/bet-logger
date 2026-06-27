@@ -1,0 +1,6 @@
+discord.py>=2.3
+anthropic>=0.69        # pin to the current release at build time
+gspread>=6.0
+google-auth>=2.20
+matplotlib>=3.7
+python-dotenv>=1.0
