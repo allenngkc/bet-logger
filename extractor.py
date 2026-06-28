@@ -25,12 +25,14 @@ _DEFAULT_MEDIA_TYPE = "image/png"
 _SYSTEM_PROMPT = (
     "You extract structured betting data from a screenshot of a bet slip plus "
     "an optional user caption. Always express odds in DECIMAL (fractional 5/2 = "
-    "3.5, American +150 = 2.5). If combined odds aren't printed, compute them as "
-    "the product of the leg decimal odds. For EACH leg, classify its market into "
-    "exactly one of the allowed `market_category` values; use 'other' if none "
-    "fit (this drives how the odds are de-vigged, so be accurate). Use the "
-    "caption only for the user's category tag, who placed it, and token %. Use "
-    "null when a value is absent. Call `record_bet` exactly once."
+    "3.5, American +150 = 2.5). Record the printed combined odds in "
+    "`combined_odds_decimal` when shown. For EACH leg, set `odds_decimal` to "
+    "that leg's OWN odds ONLY if they are shown on the slip; if an individual "
+    "leg's odds aren't visible, set it to null — never guess them or split the "
+    "combined odds across legs. Also classify each leg's market into exactly one "
+    "allowed `market_category` ('other' if unsure; this drives de-vigging). Use "
+    "the caption only for the user's category tag, who placed it, and token %. "
+    "Use null when a value is absent. Call `record_bet` exactly once."
 )
 
 # Forced tool-use schema. Plain JSON Schema (no `strict`) — see PROJECT_PLAN.md §7;
@@ -85,9 +87,16 @@ BET_TOOL = {
                             "enum": list(MARKET_CATEGORIES),
                             "description": "This leg's market type, used to de-vig its odds. 'other' if unsure.",
                         },
-                        "odds_decimal": {"type": "number"},
+                        "odds_decimal": {
+                            "type": ["number", "null"],
+                            "description": (
+                                "This leg's OWN decimal odds — only if shown on the slip. "
+                                "If the individual leg's odds aren't visible, set null; "
+                                "never guess them or split the combined odds."
+                            ),
+                        },
                     },
-                    "required": ["event", "selection", "odds_decimal", "market_category"],
+                    "required": ["event", "selection", "market_category"],
                 },
             },
             "notes": {"type": ["string", "null"]},

@@ -43,6 +43,15 @@ def test_resolve_falls_back_to_label_when_unknown_bytes():
     assert extractor._resolve_media_type(b"????", None) == "image/png"
 
 
+def test_leg_odds_optional_and_nullable():
+    # Leg odds must be omittable/nullable so the model can report "not shown"
+    # instead of guessing — which then drives the 0-EV path downstream.
+    leg = extractor.BET_TOOL["input_schema"]["properties"]["legs"]["items"]
+    assert "odds_decimal" not in leg["required"]
+    assert "null" in leg["properties"]["odds_decimal"]["type"]
+    assert "market_category" in leg["required"]  # still required
+
+
 def test_combined_odds_falls_back_to_leg_product():
     data = {
         "legs": [
