@@ -14,6 +14,7 @@ an Editor.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -64,11 +65,25 @@ _ws_cache: dict = {}
 
 
 def _service_account_json() -> dict | None:
-    """Parse GOOGLE_SERVICE_ACCOUNT_JSON, or return None to use the file fallback.
+    """Resolve service-account creds from env, or None to use the file fallback.
 
-    Empty/whitespace is treated as unset. If the var is set but isn't valid JSON
-    we raise a clear, actionable error instead of a raw JSONDecodeError.
+    Order: GOOGLE_SERVICE_ACCOUNT_JSON_B64 (base64 of the JSON — the most
+    shell/secret-store-safe form; no quoting or newline pitfalls), then
+    GOOGLE_SERVICE_ACCOUNT_JSON (raw JSON). Empty/whitespace is treated as unset;
+    a set-but-unparseable value raises a clear, actionable error.
     """
+    b64 = (os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64") or "").strip()
+    if b64:
+        try:
+            return json.loads(base64.b64decode(b64).decode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError(
+                "GOOGLE_SERVICE_ACCOUNT_JSON_B64 is set but could not be "
+                f"base64-decoded into JSON ({type(exc).__name__}). Recreate it from "
+                "the key file — PowerShell: "
+                "[Convert]::ToBase64String([IO.File]::ReadAllBytes('service_account.json'))"
+            ) from exc
+
     raw = (os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
     if not raw:
         return None
@@ -79,8 +94,8 @@ def _service_account_json() -> dict | None:
         raise RuntimeError(
             "GOOGLE_SERVICE_ACCOUNT_JSON is set but is not valid JSON "
             f"(looks {looks_like}: {exc}). It must be the full service-account "
-            "JSON on a single line. For local dev, leave it unset and point "
-            "GOOGLE_SERVICE_ACCOUNT_FILE at your .json file instead."
+            "JSON on a single line — or use GOOGLE_SERVICE_ACCOUNT_JSON_B64 "
+            "(base64) to avoid all quoting issues."
         ) from exc
 
 

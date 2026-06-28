@@ -60,6 +60,13 @@ def _blank(value: object) -> object:
     return "" if value is None else value
 
 
+def _safe_err(exc: object, limit: int = 200) -> str:
+    """Short, single-line error text for Discord — caps length so a long or
+    sensitive exception (e.g. a misconfigured credential) is never posted."""
+    text = str(exc).replace("\n", " ").strip()
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
 def _round(value: float | None, ndigits: int) -> float | None:
     return None if value is None else round(value, ndigits)
 
@@ -499,7 +506,7 @@ def main() -> None:
                 await reply.add_reaction(DISCARD)
                 pending[reply.id] = {"row": row, "author_id": message.author.id}
         except extractor.ExtractionError as exc:
-            await message.reply(f"⚠️ Couldn't read the slip: {exc}")
+            await message.reply(f"⚠️ Couldn't read the slip: {_safe_err(exc)}")
         except Exception as exc:  # don't let one bad slip crash the bot
             print(f"[slip error] {type(exc).__name__}: {exc}")
             await message.reply("⚠️ Something went wrong reading that slip. Try re-posting.")
@@ -550,7 +557,7 @@ def main() -> None:
             except Exception as exc:  # re-queue so they can retry
                 pending[payload.message_id] = entry
                 print(f"[append error] {type(exc).__name__}: {exc}")
-                await channel.send(f"⚠️ Couldn't log it: {exc}. React {CONFIRM} again to retry.")
+                await channel.send(f"⚠️ Couldn't log it: {_safe_err(exc)}. React {CONFIRM} again to retry.")
         elif emoji == DISCARD:
             pending.pop(payload.message_id, None)
             await channel.send("❌ Discarded — re-post with corrections in the caption.")

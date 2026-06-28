@@ -148,6 +148,17 @@ def test_service_account_json_unset_or_blank_is_none():
         os.environ.pop("GOOGLE_SERVICE_ACCOUNT_JSON", None)
 
 
+def test_service_account_json_b64_decodes():
+    import base64
+    payload = '{"type": "service_account", "client_email": "b@y.iam.gserviceaccount.com"}'
+    os.environ["GOOGLE_SERVICE_ACCOUNT_JSON_B64"] = base64.b64encode(payload.encode()).decode()
+    try:
+        info = sheets._service_account_json()
+        assert info["client_email"] == "b@y.iam.gserviceaccount.com"
+    finally:
+        os.environ.pop("GOOGLE_SERVICE_ACCOUNT_JSON_B64", None)
+
+
 def test_service_account_json_valid_parses():
     os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"] = (
         '{"type": "service_account", "client_email": "x@y.iam.gserviceaccount.com"}'
@@ -165,7 +176,7 @@ def test_service_account_json_invalid_raises_clear_error():
         sheets._service_account_json()
     except RuntimeError as exc:
         assert "GOOGLE_SERVICE_ACCOUNT_JSON" in str(exc)
-        assert "GOOGLE_SERVICE_ACCOUNT_FILE" in str(exc)   # points at the easy fix
+        assert "GOOGLE_SERVICE_ACCOUNT_JSON_B64" in str(exc)   # points at the easy fix
     else:
         raise AssertionError("expected RuntimeError for invalid JSON")
     finally:
