@@ -16,6 +16,7 @@ import os
 from datetime import datetime, timezone
 from io import BytesIO
 
+import devig
 import extractor
 import sheets
 from ev import EVResult, compute_ev
@@ -28,12 +29,13 @@ DISCARD = "❌"
 HELP_TEXT = (
     "**Bet Logger**\n"
     "Post a screenshot of your bet slip with a caption like:\n"
-    "`token: 50, category: WC group stage, fair: 0.55, placed by: Alex`\n\n"
-    "I read the slip, compute the token-boosted EV, and post it back. "
+    "`token: 50, category: WC group stage, placed by: Alex`\n\n"
+    "I read the slip, classify each leg's market, de-vig it to estimate fair "
+    "odds, compute the token-boosted EV, and post it back. "
     f"React {CONFIRM} to log it to the sheet, or {DISCARD} to discard "
     "(only the person who posted can confirm).\n\n"
-    "Caption fields (all optional): `token` (boost %), `category`, "
-    "`fair` (your fair win prob 0–1), `placed by`, `date`.\n\n"
+    "Caption fields (all optional): `token` (boost %), `category` (your tag), "
+    "`placed by`, `date`. EV is estimated automatically from the slip.\n\n"
     "**Commands:** `!help` · `!summary` (running stats) · `!chart` (cumulative P&L) · "
     "`!slip <message_id>` (re-fetch a slip image whose link expired)."
 )
@@ -77,15 +79,22 @@ def _money(amount: float, currency: str) -> str:
 
 
 def format_leg(leg: dict) -> str:
-    """Render one leg as 'Event — Selection [(Market)] @ odds' (§5)."""
+    """Render one leg as 'Event — Selection [(Market)] [category] @ odds' (§5).
+
+    The ``[category]`` tag (the de-vig market_category) is appended when present
+    so the per-leg classification is visible/stored in the leg cell.
+    """
     event = str(leg.get("event", "")).strip()
     selection = str(leg.get("selection", "")).strip()
     market = leg.get("market")
+    category = leg.get("market_category")
     odds = _to_float(leg.get("odds_decimal"))
 
     label = f"{event} — {selection}" if (event or selection) else "(leg)"
     if market:
         label += f" ({str(market).strip()})"
+    if category:
+        label += f" [{str(category).strip()}]"
     if odds is not None:
         label += f" @ {_fmt_odds(odds)}"
     return label
@@ -100,16 +109,20 @@ def build_row(
     screenshot_url: str,
     channel_id: int,
     message_id: int,
+    same_game: bool = False,
 ) -> dict:
     """Map extraction output + EVResult to a row dict keyed by sheets.COLUMNS.
 
     `logged_at` is set at confirm time (left "" until then). Legs beyond the
-    three columns overflow into `notes`.
+    three columns overflow into `notes`. `fair_prob` holds the de-vig estimate.
+    When `same_game` is set, a note marks the EV as approximate (correlated legs).
     """
     legs = [leg for leg in (data.get("legs") or []) if isinstance(leg, dict)]
     leg_strs = [format_leg(leg) for leg in legs]
 
     notes = (data.get("notes") or "").strip()
+    if same_game:
+        notes = (f"{notes} " if notes else "") + "[SGP — EV approximate (correlated legs)]"
     if len(leg_strs) > MAX_LEG_COLUMNS:
         extra = " | ".join(leg_strs[MAX_LEG_COLUMNS:])
         notes = (f"{notes} " if notes else "") + f"[extra legs: {extra}]"
@@ -158,7 +171,7 @@ def summarize(records: list[dict]) -> dict:
         coerced = _to_float(value)
         return coerced if coerced is not None else 0.0
 
-    flags = {"+EV": 0, "-EV": 0, "unknown": 0}
+    flags = {"+EV": 0, "-EV": 0, "0 EV": 0, "unknown": 0}
     for r in records:
         flag = str(r.get("ev_flag", "")).strip()
         if flag in flags:
@@ -269,12 +282,16 @@ def main() -> None:
     # reply.id -> {"row": dict, "author_id": int}. In-memory; dropped on restart (§11).
     pending: dict[int, dict] = {}
 
-    def build_embed(data: dict, ev: EVResult, row: dict) -> "discord.Embed":
+    def build_embed(
+        data: dict, ev: EVResult, row: dict, *, same_game: bool = False
+    ) -> "discord.Embed":
         currency = data.get("currency") or ""
         if ev.flag == "+EV":
             color, emoji = discord.Color.green(), "✅"
         elif ev.flag == "-EV":
             color, emoji = discord.Color.red(), "🚫"
+        elif ev.flag == "0 EV":
+            color, emoji = discord.Color.greyple(), "➖"
         else:
             color, emoji = discord.Color.light_grey(), "❓"
 
@@ -303,15 +320,25 @@ def main() -> None:
         embed.add_field(name="Boosted return", value=_money(ev.boosted_return, currency))
         embed.add_field(name="Breakeven", value=f"{ev.breakeven_prob * 100:.1f}%")
         if ev.fair_prob is not None:
-            embed.add_field(name="Fair prob", value=f"{ev.fair_prob * 100:.1f}%")
+            embed.add_field(name="Fair prob (est.)", value=f"{ev.fair_prob * 100:.1f}%")
 
-        if ev.ev_pct is not None and ev.ev_profit is not None:
+        if ev.flag == "0 EV":
+            ev_value = f"{emoji} 0 EV — individual leg odds missing, EV not counted"
+        elif ev.ev_pct is not None and ev.ev_profit is not None:
             sign = "+" if ev.ev_profit >= 0 else "-"
             profit = _money(abs(ev.ev_profit), currency)
-            ev_value = f"{ev.ev_pct:+.1f}%  ({sign}{profit})  {emoji} {ev.flag}"
+            ev_value = f"{ev.ev_pct:+.1f}%  ({sign}{profit})  {emoji} {ev.flag}  · est."
         else:
-            ev_value = f"{emoji} unknown — add `fair: <0–1>` to the caption for EV"
+            ev_value = f"{emoji} unknown — couldn't estimate fair odds from the legs"
         embed.add_field(name="EV", value=ev_value, inline=False)
+
+        if same_game:
+            embed.add_field(
+                name="⚠️ Same-game parlay",
+                value="Legs are correlated — the independence assumption breaks, "
+                "so this EV is only a rough estimate.",
+                inline=False,
+            )
 
         embed.set_footer(
             text=f"Placed by {row['placed_by']} · "
@@ -333,7 +360,7 @@ def main() -> None:
         f = s["flags"]
         embed.add_field(
             name="EV flags",
-            value=f"+EV {f['+EV']} · -EV {f['-EV']} · unknown {f['unknown']}",
+            value=f"+EV {f['+EV']} · -EV {f['-EV']} · 0 EV {f['0 EV']} · unknown {f['unknown']}",
             inline=False,
         )
         if s["settled_count"]:
@@ -440,9 +467,19 @@ def main() -> None:
                     return
 
                 boost_pct = _to_float(data.get("token_pct")) or 0.0
-                fair = _to_float(data.get("fair_probability"))
-                if fair is not None and not (0.0 <= fair <= 1.0):
+                # Fair prob is estimated by de-vigging each leg (per its
+                # market_category) and multiplying — see devig.py.
+                legs = data.get("legs")
+                # EV is only counted when every leg has odds to de-vig; if any
+                # leg's odds are missing we report 0 EV rather than guess from a
+                # partial parlay (see compute_ev's fair_prob=None branch).
+                if devig.all_legs_priced(legs):
+                    fair = devig.parlay_fair_prob(legs)
+                    if fair is not None and not (0.0 < fair <= 1.0):
+                        fair = None
+                else:
                     fair = None
+                sgp = devig.same_game(legs)
 
                 ev = compute_ev(combined, boost_pct, stake=stake, fair_prob=fair)
                 placed_by = (data.get("placed_by") or "").strip() or message.author.display_name
@@ -455,8 +492,9 @@ def main() -> None:
                     screenshot_url=image.url,
                     channel_id=message.channel.id,
                     message_id=message.id,
+                    same_game=sgp,
                 )
-                reply = await message.reply(embed=build_embed(data, ev, row))
+                reply = await message.reply(embed=build_embed(data, ev, row, same_game=sgp))
                 await reply.add_reaction(CONFIRM)
                 await reply.add_reaction(DISCARD)
                 pending[reply.id] = {"row": row, "author_id": message.author.id}

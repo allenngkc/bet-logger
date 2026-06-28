@@ -53,10 +53,11 @@ def test_compute_ev_no_fair_prob():
     assert _close(r.boosted_return_per_unit, 2.5)
     assert _close(r.boosted_return, 25.0)   # 2.5 * 10
     assert r.fair_prob is None
-    assert r.ev_per_unit is None
-    assert r.ev_pct is None
-    assert r.ev_profit is None
-    assert r.flag == "unknown"
+    # No fair prob -> EV reported as 0 ("0 EV"), not "unknown".
+    assert r.ev_per_unit == 0.0
+    assert r.ev_pct == 0.0
+    assert r.ev_profit == 0.0
+    assert r.flag == "0 EV"
 
 
 def test_compute_ev_positive():

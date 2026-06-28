@@ -13,6 +13,8 @@ from __future__ import annotations
 import base64
 import os
 
+from devig import MARKET_CATEGORIES
+
 DEFAULT_MODEL = "claude-opus-4-8"
 
 # Anthropic vision accepts these image media types; anything else is coerced to
@@ -24,9 +26,11 @@ _SYSTEM_PROMPT = (
     "You extract structured betting data from a screenshot of a bet slip plus "
     "an optional user caption. Always express odds in DECIMAL (fractional 5/2 = "
     "3.5, American +150 = 2.5). If combined odds aren't printed, compute them as "
-    "the product of the leg decimal odds. Use the caption for category, who "
-    "placed it, token %, and any stated fair probability. Use null when a value "
-    "is absent. Call `record_bet` exactly once."
+    "the product of the leg decimal odds. For EACH leg, classify its market into "
+    "exactly one of the allowed `market_category` values; use 'other' if none "
+    "fit (this drives how the odds are de-vigged, so be accurate). Use the "
+    "caption only for the user's category tag, who placed it, and token %. Use "
+    "null when a value is absent. Call `record_bet` exactly once."
 )
 
 # Forced tool-use schema. Plain JSON Schema (no `strict`) — see PROJECT_PLAN.md §7;
@@ -65,10 +69,6 @@ BET_TOOL = {
                 "type": ["string", "null"],
                 "description": "ISO date if stated",
             },
-            "fair_probability": {
-                "type": ["number", "null"],
-                "description": "Overall fair win prob 0-1 if user provides it",
-            },
             "legs": {
                 "type": "array",
                 "items": {
@@ -76,10 +76,18 @@ BET_TOOL = {
                     "properties": {
                         "event": {"type": "string"},
                         "selection": {"type": "string"},
-                        "market": {"type": ["string", "null"]},
+                        "market": {
+                            "type": ["string", "null"],
+                            "description": "Free-text market label as printed, e.g. 'Total Goals Over 2.5'",
+                        },
+                        "market_category": {
+                            "type": "string",
+                            "enum": list(MARKET_CATEGORIES),
+                            "description": "This leg's market type, used to de-vig its odds. 'other' if unsure.",
+                        },
                         "odds_decimal": {"type": "number"},
                     },
-                    "required": ["event", "selection", "odds_decimal"],
+                    "required": ["event", "selection", "odds_decimal", "market_category"],
                 },
             },
             "notes": {"type": ["string", "null"]},
@@ -111,10 +119,34 @@ def _get_client() -> anthropic.Anthropic:
     return _client
 
 
+def _sniff_media_type(image_bytes: bytes) -> str | None:
+    """Detect the media type from the file's magic bytes, or None if unknown.
+
+    Discord (and other sources) sometimes mislabels an attachment's
+    ``content_type`` — e.g. a PNG served as ``image/webp`` — and Anthropic
+    rejects the request when the declared type doesn't match the bytes. We trust
+    the bytes over the caller-supplied label.
+    """
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def _normalize_media_type(media_type: str | None) -> str:
     if media_type in _VALID_MEDIA_TYPES:
         return media_type  # type: ignore[return-value]
     return _DEFAULT_MEDIA_TYPE
+
+
+def _resolve_media_type(image_bytes: bytes, media_type: str | None) -> str:
+    """Prefer the type sniffed from the bytes; fall back to the caller's label."""
+    return _sniff_media_type(image_bytes) or _normalize_media_type(media_type)
 
 
 def extract_bet(image_bytes: bytes, media_type: str, caption: str = "") -> dict:
@@ -122,8 +154,9 @@ def extract_bet(image_bytes: bytes, media_type: str, caption: str = "") -> dict:
 
     Args:
         image_bytes: Raw image bytes of the bet slip.
-        media_type: The image's media type (e.g. "image/png"). Unsupported
-            values are coerced to "image/png".
+        media_type: The caller's declared media type (e.g. "image/png"). Used
+            only as a fallback hint — the type is detected from the image bytes
+            when possible, since callers (Discord) sometimes mislabel it.
         caption: The user's caption text (may be empty).
 
     Returns:
@@ -149,7 +182,7 @@ def extract_bet(image_bytes: bytes, media_type: str, caption: str = "") -> dict:
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": _normalize_media_type(media_type),
+                            "media_type": _resolve_media_type(image_bytes, media_type),
                             "data": b64,
                         },
                     },

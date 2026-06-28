@@ -24,6 +24,19 @@ def test_format_leg_with_market_and_str_odds():
     assert s == "A v B — Over 2.5 (Goals) @ 1.8"
 
 
+def test_format_leg_with_market_category():
+    s = bot.format_leg(
+        {
+            "event": "Spain v France",
+            "selection": "Over 2.5",
+            "market": "Total Goals",
+            "market_category": "totals_handicap",
+            "odds_decimal": 1.8,
+        }
+    )
+    assert s == "Spain v France — Over 2.5 (Total Goals) [totals_handicap] @ 1.8"
+
+
 def test_build_row_maps_all_columns():
     data = {
         "bookmaker": "bet365",
@@ -89,11 +102,32 @@ def test_build_row_overflow_and_no_fair_prob():
     assert row["num_legs"] == 4
     assert row["leg3"].startswith("E3")
     assert "extra legs" in row["notes"] and "E4" in row["notes"]
-    # No fair prob -> EV fields blank, flag unknown, but breakeven still present.
-    assert row["ev_flag"] == "unknown"
-    assert row["ev_per_unit"] == "" and row["ev_pct"] == "" and row["ev_profit"] == ""
+    # No fair prob -> EV reported as 0 ("0 EV"); breakeven still present.
+    assert row["ev_flag"] == "0 EV"
+    assert row["ev_per_unit"] == 0.0 and row["ev_pct"] == 0.0 and row["ev_profit"] == 0.0
     assert row["fair_prob"] == ""
     assert isinstance(row["breakeven_prob"], float)
+
+
+def test_build_row_same_game_note():
+    data = {
+        "stake": 5,
+        "combined_odds_decimal": 3.0,
+        "legs": [
+            {"event": "Spain v France", "selection": "Spain", "odds_decimal": 1.5},
+            {"event": "Spain v France", "selection": "Over 2.5", "odds_decimal": 2.0},
+        ],
+        "notes": "same match",
+    }
+    ev = compute_ev(3.0, 0, stake=5.0)
+    row = bot.build_row(
+        data, ev,
+        placed_by="x", logged_at="",
+        screenshot_url="", channel_id=1, message_id=2,
+        same_game=True,
+    )
+    assert "same match" in row["notes"]
+    assert "SGP" in row["notes"] and "approximate" in row["notes"]
 
 
 def test_build_row_defaults_bookmaker_and_blanks():
@@ -120,7 +154,7 @@ def test_summarize_counts_and_settled():
     s = bot.summarize(records)
     assert s["total"] == 4
     assert abs(s["staked_all"] - 25.0) < 1e-9
-    assert s["flags"] == {"+EV": 2, "-EV": 1, "unknown": 1}
+    assert s["flags"] == {"+EV": 2, "-EV": 1, "0 EV": 0, "unknown": 1}
     assert s["pending"] == 1
     assert s["settled_count"] == 3
     assert abs(s["settled_staked"] - 15.0) < 1e-9     # 5 + 8 + 2

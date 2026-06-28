@@ -60,11 +60,11 @@ class EVResult:
     breakeven_prob: float            # win prob needed to break even (post-boost)
     boosted_return_per_unit: float   # total return per 1 unit staked = boosted_decimal
     boosted_return: float            # total return for the given stake = boosted_decimal * stake
-    fair_prob: float | None          # user-supplied fair win prob, or None
-    ev_per_unit: float | None        # EV per 1 unit staked, or None if no fair_prob
-    ev_pct: float | None             # EV as % of stake = ev_per_unit * 100, or None
-    ev_profit: float | None          # expected profit for `stake` = ev_per_unit * stake, or None
-    flag: str                        # "+EV" | "-EV" | "unknown"
+    fair_prob: float | None          # de-vig fair win prob, or None if not computable
+    ev_per_unit: float | None        # EV per 1 unit staked (0.0 when fair_prob is None)
+    ev_pct: float | None             # EV as % of stake = ev_per_unit * 100
+    ev_profit: float | None          # expected profit for `stake` = ev_per_unit * stake
+    flag: str                        # "+EV" | "-EV" | "0 EV" (no fair_prob)
 
 
 def compute_ev(
@@ -100,10 +100,13 @@ def compute_ev(
     breakeven = 1 / boosted
 
     if fair_prob is None:
-        ev_per_unit: float | None = None
-        ev_pct: float | None = None
-        ev_profit: float | None = None
-        flag = "unknown"
+        # No fair probability available (e.g. individual leg odds weren't on the
+        # slip), so EV can't be estimated — report it as 0 ("0 EV") rather than
+        # guessing from a partial parlay.
+        ev_per_unit: float | None = 0.0
+        ev_pct: float | None = 0.0
+        ev_profit: float | None = 0.0
+        flag = "0 EV"
     else:
         ev_per_unit = fair_prob * (boosted - 1) - (1 - fair_prob)
         ev_pct = ev_per_unit * 100
