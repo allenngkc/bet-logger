@@ -1,16 +1,23 @@
-# Fly.io config — bet-logger Discord bot (always-on worker, no HTTP service).
+# fly.toml app configuration file generated for bet-logger on 2026-06-28T09:32:20Z
 #
-# `app` must be globally unique; set it to the name you create with
-# `fly apps create`. No [http_service] block on purpose: this is a gateway bot
-# with no inbound traffic, so the machine simply runs the CMD continuously.
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "CHANGE-ME-bet-logger"   # <- your unique app name
-primary_region = "iad"         # <- any nearby region; latency isn't critical
-                               #    (e.g. lhr=London, iad=US-East, sin=Singapore)
+app = 'bet-logger'
+primary_region = 'yyz'
 
 [build]
 
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
 [[vm]]
-  cpu_kind = "shared"
+  memory = '512mb'
+  cpu_kind = 'shared'
   cpus = 1
-  memory = "512mb"             # headroom for matplotlib/numpy when rendering !chart
+  memory_mb = 512
