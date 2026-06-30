@@ -8,7 +8,7 @@ This document is the implementation spec. It captures **decisions already made**
 
 ## 1. Goals & context
 
-- The group makes parlays +EV by applying **profit-boost tokens** (30% / 50% / 100%, etc.). A token boosts the **profit** portion of a winning bet. To use a token, bet365 requires a **3-leg parlay**. After accounting for the vig and the token boost, the slip should be +EV.
+- The group makes parlays +EV by applying **profit-boost tokens** (30% / 50% / 100%, etc.). A token boosts the **profit** portion of a winning bet. To use a token, bet365 requires a **3-leg parlay**; other books (e.g. **FanDuel**) allow tokens on straight (single-leg) bets and same-game parlays too, so the EV math and pipeline handle **any leg count** (a straight bet with a token, given its shown odds, is reliably +EV once de-vigged). After accounting for the vig and the token boost, the slip should be +EV.
 - Today they log bets in spreadsheets manually — primitive and inconsistent across people. This bot standardizes capture.
 - bet365 has **no export/API**, so reading the bet-slip **screenshot** with a vision model is the deliberate, correct approach (not a workaround).
 - Output is a **Google Sheet** the whole group can read, with **one row per bet** (the 3-leg parlay is condensed inline into that row). Visualizations come later, off the same sheet.
@@ -139,6 +139,16 @@ boosted_decimal = 1 + (D - 1) * (1 + b/100)
 - 50% token → profit ×1.5.
 - 100% token → profit ×2.
 
+> **`D` must be the PRE-boost combined odds.** The boost is applied here, exactly
+> once. bet365 slips show the pre-boost price (the token is applied separately),
+> so this is natural. But some books (e.g. **FanDuel**) print the *already-boosted*
+> price in large type next to a struck-through original — e.g. `+133` crossed out,
+> `+198` shown big, with a "PROFIT BOOST 50%" badge. Feeding the boosted `+198`
+> (2.98) in as `D` double-counts the boost (2.98 → 3.97 → a $198 return on a slip
+> that pays ~$149). Extraction keeps the original and boosted prices in separate
+> fields and `extractor.resolve_boost` reconciles them to the pre-boost `D` before
+> this math runs — see §7.
+
 **Breakeven probability** (after boost): `1 / boosted_decimal`.
 
 **Boosted return per unit staked**: `boosted_decimal` (total return incl. stake). Multiply by `stake` for the sheet's `boosted_return`.
@@ -194,7 +204,8 @@ Use the Anthropic Python SDK with **vision + a single forced tool call**.
     "bookmaker":   {"type": "string"},
     "currency":    {"type": "string"},
     "stake":       {"type": "number"},
-    "combined_odds_decimal": {"type": "number", "description": "Total parlay odds in DECIMAL"},
+    "combined_odds_decimal": {"type": ["number","null"], "description": "ORIGINAL pre-boost parlay odds in DECIMAL; null if only a boosted price is shown"},
+    "boosted_odds_decimal":  {"type": ["number","null"], "description": "Already-boosted parlay odds in DECIMAL, only if the slip shows them (e.g. FanDuel +198 → 2.98); null otherwise"},
     "potential_return":      {"type": "number", "description": "Payout before any boost, if visible"},
     "token_pct":   {"type": ["number","null"], "description": "Boost token % (30/50/100), null if none"},
     "category":    {"type": ["string","null"], "description": "User category/tag from caption"},
@@ -216,11 +227,18 @@ Use the Anthropic Python SDK with **vision + a single forced tool call**.
     },
     "notes": {"type": ["string","null"]}
   },
-  "required": ["stake", "combined_odds_decimal", "legs"]
+  "required": ["stake", "legs"]
 }
 ```
 
 **Fallback:** if `combined_odds_decimal` is missing/0 but legs exist, compute it as the product of leg `odds_decimal` before EV.
+
+**Boost reconciliation (`resolve_boost`).** The slip can show a pre-boost price, an already-boosted price, or both, plus the token %. `compute_ev` needs the **pre-boost** odds (it applies the boost once — §6). `extractor.resolve_boost(data)` returns `(pre_boost_combined_decimal, boost_pct, note)`:
+- only a pre-boost price (bet365) → pass it through unchanged;
+- a pre-boost **and** a boosted price → if boosting the pre-boost price by the token reproduces the boosted price, trust the pre-boost one; otherwise the recorded "pre-boost" value is itself already boosted (the model grabbed FanDuel's big number), so back out `1 + (boosted − 1)/(1 + b/100)` and return a `note`;
+- only a boosted price → back out the pre-boost odds the same way.
+
+`bot.py` calls `resolve_boost` instead of reading `combined_odds_decimal`/`token_pct` directly, and surfaces `note` in the embed + row `notes` so a reconciled boost is auditable.
 
 **Schema validity:** forced tool-use guarantees Claude *calls* `record_bet`, but not that the input is schema-valid — so keep the defensive coercion (stake/odds → float, see §11). For a hard guarantee, `strict: true` on the tool (requires `additionalProperties: false` on every object) or structured outputs (`output_config.format`) are available on 4.8, but both add rigidity; the forced-tool approach is a fine default.
 
@@ -317,6 +335,9 @@ worker: python bot.py
 - **Double-confirm race** — on ✅, pop from `pending` *before* the sheet write and re-insert on failure. Otherwise a rapid second ✅ during the `await` can append the same bet twice.
 - **Discord image URLs expire** — attachment CDN URLs are signed and 403 after ~24h. Store `channel_id` + `message_id` (durable) and refresh via `!slip` rather than relying on `screenshot_url`.
 - **Odds normalization** — bet365 shows fractional/decimal/American depending on region. The model normalizes to decimal; the EV math assumes decimal. Spot-check early extractions.
+- **Profit boost displayed already-boosted (FanDuel)** — keep the pre-boost and boosted prices in separate fields and reconcile via `extractor.resolve_boost`, or the token gets applied twice (§6/§7).
+- **Leg odds are image-driven** — per-leg odds come from the slip image, never the caption (users rarely type them). When the slip prints a price beside a leg, the model reads it into `odds_decimal` and the de-vig EV uses it — even if the caption is silent on odds. Don't let the caption suppress visible odds.
+- **Unpriced legs ≠ near-certain legs** — when a leg's price genuinely isn't shown (common on SGPs that print only the combined price), it must be null. `devig` treats decimal odds `<= 1.0` as "no usable price" (1.0 means zero profit; below is impossible), so a leg with no price (null) *or* a `1.0` placeholder makes `all_legs_priced` False and the bet reports **0 EV** — instead of de-vigging a bogus ~100% implied prob into a fake +EV. The model is instructed to emit null (never 1/1.0/the combined odds) for legs whose odds aren't shown.
 - **Parse tool input as structured data** — it's already a dict from `block.input`; validate types defensively (stake/odds may come back as strings — coerce to float).
 - **media_type** must be a supported image type; map the Discord `content_type`, default to `image/png`.
 - **Cost** — at our volume (a few bets/day among ~3 people) an Opus 4.8 extraction is pennies/day, so default to `claude-opus-4-8` for quality. `claude-sonnet-4-6` via `ANTHROPIC_MODEL` stays available if volume grows — a deliberate switch, not a silent downgrade.

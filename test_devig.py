@@ -68,6 +68,21 @@ def test_parlay_fair_prob_none_when_no_usable_legs():
     assert devig.parlay_fair_prob([{"selection": "x"}]) is None
 
 
+def test_odds_of_one_is_not_a_usable_price():
+    # Decimal 1.0 is a non-price (zero profit). It commonly appears when a SGP
+    # slip hides per-leg odds and the model emits a 1.0 placeholder; it must NOT
+    # de-vig to a ~100% implied prob and fabricate EV. (Regression: a 2-leg SGP
+    # with 1.0 placeholders produced a 90.7% fair prob and a bogus +EV.)
+    legs = [
+        {"odds_decimal": 1.0, "market_category": "totals_handicap"},
+        {"odds_decimal": 1.0, "market_category": "soccer_1x2"},
+    ]
+    assert devig.all_legs_priced(legs) is False
+    assert devig.parlay_fair_prob(legs) is None
+    # A genuine near-certain favourite just above 1.0 is still usable.
+    assert devig.all_legs_priced([{"odds_decimal": 1.01}]) is True
+
+
 def test_missing_category_uses_default():
     leg_no_cat = [{"odds_decimal": 2.0}]
     assert _close(
@@ -81,6 +96,7 @@ def test_all_legs_priced():
     assert devig.all_legs_priced([{"odds_decimal": "1.8"}]) is True  # string-coercible
     assert devig.all_legs_priced([{"odds_decimal": 1.5}, {"selection": "x"}]) is False  # one missing
     assert devig.all_legs_priced([{"odds_decimal": 0}, {"odds_decimal": 2.0}]) is False  # non-positive
+    assert devig.all_legs_priced([{"odds_decimal": 1.0}, {"odds_decimal": 2.0}]) is False  # 1.0 is a non-price
     assert devig.all_legs_priced([]) is False
     assert devig.all_legs_priced(None) is False
 

@@ -50,6 +50,21 @@ def _to_float(value: object) -> float | None:
         return None
 
 
+# A real selection price in decimal odds is strictly greater than 1.0: 1.0 means
+# zero profit and anything below is impossible. A bet slip that hides per-leg
+# odds (e.g. a same-game parlay showing only the combined price) often yields a
+# 1.0 — or the extractor emitting a placeholder — which de-vigs to a bogus ~100%
+# implied prob. Treat anything <= 1.0 as "no usable odds" so EV isn't fabricated
+# from a non-price; callers then fall back to the 0-EV path.
+_MIN_USABLE_ODDS = 1.0
+
+
+def _usable_odds(value: object) -> float | None:
+    """The decimal odds as a float if they're a real price (> 1.0), else None."""
+    odds = _to_float(value)
+    return odds if (odds is not None and odds > _MIN_USABLE_ODDS) else None
+
+
 def margin_for(category: str | None) -> float:
     """Assumed overround for a category, falling back to ``DEFAULT_CATEGORY``."""
     if category is None:
@@ -86,8 +101,8 @@ def parlay_fair_prob(legs: object) -> float | None:
     for leg in legs or []:
         if not isinstance(leg, dict):
             continue
-        odds = _to_float(leg.get("odds_decimal"))
-        if odds is None or odds <= 0:
+        odds = _usable_odds(leg.get("odds_decimal"))
+        if odds is None:
             continue
         product *= devig_prob(odds, leg.get("market_category"))
         found = True
@@ -97,18 +112,19 @@ def parlay_fair_prob(legs: object) -> float | None:
 
 
 def all_legs_priced(legs: object) -> bool:
-    """True only if there's at least one leg and every leg has usable odds.
+    """True only if there's at least one leg and every leg has usable odds (> 1.0).
 
     EV needs each leg's odds to de-vig; if any leg is missing them the parlay
     fair prob would be computed from a subset (silently wrong), so callers treat
-    this as "EV not countable" and report 0 EV instead.
+    this as "EV not countable" and report 0 EV instead. Odds <= 1.0 are not a
+    real price (see ``_usable_odds``) — a slip that hides per-leg odds (SGP) or a
+    1.0 placeholder counts as unpriced, not as a near-certain leg.
     """
     found = False
     for leg in legs or []:
         if not isinstance(leg, dict):
             return False
-        odds = _to_float(leg.get("odds_decimal"))
-        if odds is None or odds <= 0:
+        if _usable_odds(leg.get("odds_decimal")) is None:
             return False
         found = True
     return found

@@ -117,12 +117,15 @@ def build_row(
     channel_id: int,
     message_id: int,
     same_game: bool = False,
+    boost_note: str | None = None,
 ) -> dict:
     """Map extraction output + EVResult to a row dict keyed by sheets.COLUMNS.
 
     `logged_at` is set at confirm time (left "" until then). Legs beyond the
     three columns overflow into `notes`. `fair_prob` holds the de-vig estimate.
     When `same_game` is set, a note marks the EV as approximate (correlated legs).
+    `boost_note`, when set, records that the profit boost was reconciled (e.g. a
+    book that prints the already-boosted price) so the boosted return is audit-able.
     """
     legs = [leg for leg in (data.get("legs") or []) if isinstance(leg, dict)]
     leg_strs = [format_leg(leg) for leg in legs]
@@ -130,6 +133,8 @@ def build_row(
     notes = (data.get("notes") or "").strip()
     if same_game:
         notes = (f"{notes} " if notes else "") + "[SGP — EV approximate (correlated legs)]"
+    if boost_note:
+        notes = (f"{notes} " if notes else "") + f"[boost: {boost_note}]"
     if len(leg_strs) > MAX_LEG_COLUMNS:
         extra = " | ".join(leg_strs[MAX_LEG_COLUMNS:])
         notes = (f"{notes} " if notes else "") + f"[extra legs: {extra}]"
@@ -290,7 +295,12 @@ def main() -> None:
     pending: dict[int, dict] = {}
 
     def build_embed(
-        data: dict, ev: EVResult, row: dict, *, same_game: bool = False
+        data: dict,
+        ev: EVResult,
+        row: dict,
+        *,
+        same_game: bool = False,
+        boost_note: str | None = None,
     ) -> "discord.Embed":
         currency = data.get("currency") or ""
         if ev.flag == "+EV":
@@ -338,6 +348,14 @@ def main() -> None:
         else:
             ev_value = f"{emoji} unknown — couldn't estimate fair odds from the legs"
         embed.add_field(name="EV", value=ev_value, inline=False)
+
+        if boost_note:
+            embed.add_field(
+                name="ℹ️ Profit boost reconciled",
+                value=f"{boost_note[0].upper()}{boost_note[1:]} — boosted return "
+                "computed once, not twice.",
+                inline=False,
+            )
 
         if same_game:
             embed.add_field(
@@ -463,7 +481,10 @@ def main() -> None:
                     image.content_type or "",
                     message.content,
                 )
-                combined = extractor.combined_odds_decimal(data)
+                # Pre-boost combined odds + token, reconciled so a book that
+                # prints the already-boosted price (FanDuel) doesn't get the
+                # boost applied twice. See extractor.resolve_boost.
+                combined, boost_pct, boost_note = extractor.resolve_boost(data)
 
                 stake = _to_float(data.get("stake"))
                 if stake is None or stake <= 0:
@@ -473,7 +494,6 @@ def main() -> None:
                     )
                     return
 
-                boost_pct = _to_float(data.get("token_pct")) or 0.0
                 # Fair prob is estimated by de-vigging each leg (per its
                 # market_category) and multiplying — see devig.py.
                 legs = data.get("legs")
@@ -500,8 +520,11 @@ def main() -> None:
                     channel_id=message.channel.id,
                     message_id=message.id,
                     same_game=sgp,
+                    boost_note=boost_note,
                 )
-                reply = await message.reply(embed=build_embed(data, ev, row, same_game=sgp))
+                reply = await message.reply(
+                    embed=build_embed(data, ev, row, same_game=sgp, boost_note=boost_note)
+                )
                 await reply.add_reaction(CONFIRM)
                 await reply.add_reaction(DISCARD)
                 pending[reply.id] = {"row": row, "author_id": message.author.id}

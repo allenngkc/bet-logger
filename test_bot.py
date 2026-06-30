@@ -6,6 +6,7 @@ Run either way:
 """
 
 import bot
+import devig
 import sheets
 from ev import compute_ev
 
@@ -128,6 +129,101 @@ def test_build_row_same_game_note():
     )
     assert "same match" in row["notes"]
     assert "SGP" in row["notes"] and "approximate" in row["notes"]
+
+
+def test_straight_bet_with_token_is_positive_ev():
+    # A single-leg "straight" bet with a profit token: the leg's odds ARE shown
+    # (it's the only selection), so we de-vig them and the boost pushes it +EV.
+    # Confirms the pipeline handles num_legs == 1 (no same-game, leg priced).
+    legs = [
+        {
+            "event": "Panama v Croatia",
+            "selection": "Croatia ML",
+            "market_category": "soccer_1x2",
+            "odds_decimal": 2.0,
+        }
+    ]
+    assert devig.all_legs_priced(legs) is True
+    assert devig.same_game(legs) is False
+    fair = devig.parlay_fair_prob(legs)
+    assert fair is not None and 0.0 < fair <= 1.0
+    ev = compute_ev(2.0, 40, stake=25.0, fair_prob=fair)
+    assert ev.flag == "+EV"
+
+    row = bot.build_row(
+        {"stake": 25, "combined_odds_decimal": 2.0, "token_pct": 40, "legs": legs},
+        ev,
+        placed_by="Momo", logged_at="",
+        screenshot_url="", channel_id=1, message_id=2,
+        same_game=False,
+    )
+    assert row["num_legs"] == 1
+    assert row["ev_flag"] == "+EV"
+
+
+def test_sgp_with_visible_leg_odds_is_leveraged():
+    # When the slip DOES print per-leg odds (even if the caption omits them), the
+    # pipeline reads and uses them: all_legs_priced True -> fair prob -> EV is
+    # actually computed (not the 0-EV "leg odds missing" path). Counterpart to
+    # test_unpriced_sgp_legs_report_zero_ev.
+    legs = [
+        {"event": "Panama v Croatia", "selection": "Over 2.5 Goals",
+         "market_category": "totals_handicap", "odds_decimal": 1.8},
+        {"event": "Panama v Croatia", "selection": "Croatia ML",
+         "market_category": "soccer_1x2", "odds_decimal": 2.1},
+    ]
+    assert devig.all_legs_priced(legs) is True
+    fair = devig.parlay_fair_prob(legs)
+    assert fair is not None and 0.0 < fair <= 1.0
+    ev = compute_ev(1.8 * 2.1, 40, stake=25.0, fair_prob=fair)
+    assert ev.flag != "0 EV" and ev.ev_per_unit != 0.0
+    # The leg odds the model read off the slip surface in the row's leg strings.
+    row = bot.build_row(
+        {"stake": 25, "token_pct": 40, "legs": legs}, ev,
+        placed_by="Momo", logged_at="",
+        screenshot_url="", channel_id=1, message_id=2, same_game=True,
+    )
+    assert "@ 1.8" in row["leg1"] and "@ 2.1" in row["leg2"]
+
+
+def test_unpriced_sgp_legs_report_zero_ev():
+    # Regression for the reported bug: a 2-leg SGP whose per-leg odds aren't shown
+    # (model emitted 1.0 placeholders, "@ 1" in the embed) must NOT fabricate a
+    # fair prob. With no usable leg odds, EV is reported as 0, not a bogus +EV.
+    legs = [
+        {"event": "Panama v Croatia", "selection": "Over 2.5 Goals",
+         "market_category": "totals_handicap", "odds_decimal": 1.0},
+        {"event": "Panama v Croatia", "selection": "Croatia ML",
+         "market_category": "soccer_1x2", "odds_decimal": 1.0},
+    ]
+    fair = devig.parlay_fair_prob(legs) if devig.all_legs_priced(legs) else None
+    assert fair is None
+    ev = compute_ev(2.07, 40, stake=25.0, fair_prob=fair)
+    assert ev.flag == "0 EV"
+    assert ev.ev_per_unit == 0.0
+
+
+def test_build_row_boost_note_appended():
+    # When the profit boost had to be reconciled (e.g. FanDuel's already-boosted
+    # price), the note is recorded so the boosted return is auditable.
+    data = {
+        "stake": 50,
+        "combined_odds_decimal": 2.33,
+        "token_pct": 50,
+        "legs": [{"event": "Col v DRC", "selection": "Over 8.5 Corners"}],
+        "notes": "wc",
+    }
+    ev = compute_ev(2.33, 50, stake=50.0)
+    row = bot.build_row(
+        data, ev,
+        placed_by="Momo", logged_at="",
+        screenshot_url="", channel_id=1, message_id=2,
+        boost_note="used the slip's boosted price (the recorded odds were already boosted)",
+    )
+    assert "wc" in row["notes"]
+    assert "[boost:" in row["notes"]
+    # Boosted return is the single-boost figure (~149.75 on 2.33 @ 50%), not 198.5.
+    assert abs(row["boosted_return"] - 149.75) < 0.5
 
 
 def test_build_row_defaults_bookmaker_and_blanks():
