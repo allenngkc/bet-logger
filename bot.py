@@ -483,8 +483,10 @@ def main() -> None:
                 )
                 # Pre-boost combined odds + token, reconciled so a book that
                 # prints the already-boosted price (FanDuel) doesn't get the
-                # boost applied twice. See extractor.resolve_boost.
-                combined, boost_pct, boost_note = extractor.resolve_boost(data)
+                # boost applied twice. `displayed_boosted` is the slip's own
+                # boosted price (when shown) so the payout rides on the book's
+                # actual rounded odds, not a recomputed one. See resolve_boost.
+                combined, boost_pct, displayed_boosted, boost_note = extractor.resolve_boost(data)
 
                 stake = _to_float(data.get("stake"))
                 if stake is None or stake <= 0:
@@ -508,7 +510,10 @@ def main() -> None:
                     fair = None
                 sgp = devig.same_game(legs)
 
-                ev = compute_ev(combined, boost_pct, stake=stake, fair_prob=fair)
+                ev = compute_ev(
+                    combined, boost_pct, stake=stake, fair_prob=fair,
+                    boosted_decimal=displayed_boosted,
+                )
                 placed_by = (data.get("placed_by") or "").strip() or message.author.display_name
 
                 row = build_row(

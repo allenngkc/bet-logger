@@ -72,17 +72,26 @@ def compute_ev(
     boost_pct: float,
     stake: float = 1.0,
     fair_prob: float | None = None,
+    boosted_decimal: float | None = None,
 ) -> EVResult:
     """Compute token-boosted EV for a parlay.
 
     Args:
-        combined_decimal: Combined parlay odds in decimal (>= 1).
+        combined_decimal: Combined parlay odds in decimal (>= 1). Always the
+            PRE-boost figure — it's recorded as-is on the result.
         boost_pct: Profit-boost token percentage (e.g. 50). Use 0 for no token.
         stake: Wager amount. Used only to scale ``boosted_return``; per-unit
             fields are unaffected.
         fair_prob: User-supplied fair win probability in [0, 1]. When ``None``,
             EV cannot be computed: ``flag`` is "unknown" and ``ev_per_unit`` is
             ``None`` (``breakeven_prob`` is still returned).
+        boosted_decimal: The book's already-boosted combined odds, when the slip
+            prints them (e.g. FanDuel shows a big boosted price). When given, it
+            is used directly as the post-boost odds — driving ``boosted_return``,
+            ``breakeven_prob`` and EV — so we pay on the book's ACTUAL (rounded)
+            boosted price instead of re-deriving it from ``combined_decimal`` ×
+            the token. When ``None`` (e.g. bet365 prints only the pre-boost
+            price), the boost is computed from ``combined_decimal``/``boost_pct``.
 
     Returns:
         EVResult. All fields are per 1 unit staked except ``boosted_return``.
@@ -95,8 +104,17 @@ def compute_ev(
         raise ValueError("stake must be > 0")
     if fair_prob is not None and not (0.0 <= fair_prob <= 1.0):
         raise ValueError("fair_prob must be in [0, 1]")
+    if boosted_decimal is not None and boosted_decimal < 1.0:
+        raise ValueError("boosted_decimal must be >= 1.0 (decimal odds)")
 
-    boosted = boosted_decimal_odds(combined_decimal, boost_pct)
+    # Prefer the book's displayed boosted price when we have it (it reflects the
+    # book's own odds rounding, e.g. +462 shown as +465); otherwise compute the
+    # boost from the pre-boost odds and token.
+    boosted = (
+        boosted_decimal
+        if boosted_decimal is not None
+        else boosted_decimal_odds(combined_decimal, boost_pct)
+    )
     breakeven = 1 / boosted
 
     if fair_prob is None:

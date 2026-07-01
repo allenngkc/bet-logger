@@ -153,6 +153,8 @@ boosted_decimal = 1 + (D - 1) * (1 + b/100)
 
 **Boosted return per unit staked**: `boosted_decimal` (total return incl. stake). Multiply by `stake` for the sheet's `boosted_return`.
 
+> **Prefer the book's displayed boosted price.** When a slip prints its own already-boosted price (e.g. FanDuel shows the big boosted odds beside the struck-through original), that price — not the formula above — is what the book pays, and books round their boosted odds (e.g. +462 shown as +465). `compute_ev` takes an optional `boosted_decimal` override: when the slip shows a boosted price (surfaced by `resolve_boost` — §7), it's used directly as `boosted_decimal`, so `boosted_return`, `breakeven_prob`, and EV all match the slip exactly. Only when no boosted price is shown (bet365 prints just the pre-boost price) is the boost computed via `1 + (D − 1) × (1 + b/100)`. `combined_decimal` always records the PRE-boost odds.
+
 > **Boost caps:** bet365 profit boosts usually have a max bonus cap. Above the cap, real return < `boosted_decimal × stake`, so `boosted_return`/`ev_per_unit` would overstate. At our usual unit sizes the cap is effectively never binding, so v1 ignores it; if stakes grow, add an optional `max_boost` (or cap the boosted profit) before computing EV.
 
 **Expected value per unit** (only when the user supplies a fair win probability `p`):
@@ -233,12 +235,12 @@ Use the Anthropic Python SDK with **vision + a single forced tool call**.
 
 **Fallback:** if `combined_odds_decimal` is missing/0 but legs exist, compute it as the product of leg `odds_decimal` before EV.
 
-**Boost reconciliation (`resolve_boost`).** The slip can show a pre-boost price, an already-boosted price, or both, plus the token %. `compute_ev` needs the **pre-boost** odds (it applies the boost once — §6). `extractor.resolve_boost(data)` returns `(pre_boost_combined_decimal, boost_pct, note)`:
-- only a pre-boost price (bet365) → pass it through unchanged;
-- a pre-boost **and** a boosted price → if boosting the pre-boost price by the token reproduces the boosted price, trust the pre-boost one; otherwise the recorded "pre-boost" value is itself already boosted (the model grabbed FanDuel's big number), so back out `1 + (boosted − 1)/(1 + b/100)` and return a `note`;
-- only a boosted price → back out the pre-boost odds the same way.
+**Boost reconciliation (`resolve_boost`).** The slip can show a pre-boost price, an already-boosted price, or both, plus the token %. `compute_ev` records the **pre-boost** odds but pays out on the boosted odds (§6). `extractor.resolve_boost(data)` returns `(pre_boost_combined_decimal, boost_pct, displayed_boosted, note)`:
+- only a pre-boost price (bet365) → pass it through unchanged; `displayed_boosted` is `None` (no boosted price shown, so `compute_ev` computes the boost);
+- a pre-boost **and** a boosted price → if boosting the pre-boost price by the token reproduces the boosted price, trust the pre-boost one; otherwise the recorded "pre-boost" value is itself already boosted (the model grabbed FanDuel's big number), so back out `1 + (boosted − 1)/(1 + b/100)` and return a `note`. Either way `displayed_boosted` is the slip's boosted price so the payout rides on the book's actual (rounded) odds, not a recomputed one;
+- only a boosted price → back out the pre-boost odds the same way; `displayed_boosted` is that boosted price.
 
-`bot.py` calls `resolve_boost` instead of reading `combined_odds_decimal`/`token_pct` directly, and surfaces `note` in the embed + row `notes` so a reconciled boost is auditable.
+`bot.py` calls `resolve_boost` instead of reading `combined_odds_decimal`/`token_pct` directly, passes `displayed_boosted` to `compute_ev` as its `boosted_decimal` override, and surfaces `note` in the embed + row `notes` so a reconciled boost is auditable.
 
 **Schema validity:** forced tool-use guarantees Claude *calls* `record_bet`, but not that the input is schema-valid — so keep the defensive coercion (stake/odds → float, see §11). For a hard guarantee, `strict: true` on the tool (requires `additionalProperties: false` on every object) or structured outputs (`output_config.format`) are available on 4.8, but both add rigidity; the forced-tool approach is a fine default.
 

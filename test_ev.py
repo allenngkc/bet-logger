@@ -104,6 +104,28 @@ def test_zero_token_unchanged():
     assert r.flag == "+EV"
 
 
+def test_compute_ev_boosted_override_drives_payout():
+    # The book prints its own boosted price (e.g. FanDuel rounds +462 to +465).
+    # When passed, that price drives boosted_return/breakeven/EV directly instead
+    # of recomputing from the token — combined_decimal stays the pre-boost figure.
+    r = compute_ev(4.30, 40, stake=25.0, boosted_decimal=5.65)
+    assert _close(r.combined_decimal, 4.30)   # record keeps pre-boost odds
+    assert _close(r.boosted_decimal, 5.65)    # not the recomputed 5.62
+    assert _close(r.boosted_return, 141.25)   # 5.65 * 25, matches the slip
+    assert _close(r.boosted_return_per_unit, 5.65)
+    assert _close(r.breakeven_prob, 1 / 5.65)
+    # EV also rides on the displayed boosted odds when a fair prob is supplied.
+    r2 = compute_ev(4.30, 40, stake=25.0, fair_prob=0.25, boosted_decimal=5.65)
+    assert _close(r2.ev_per_unit, 0.25 * (5.65 - 1) - 0.75)
+
+
+def test_compute_ev_boosted_override_none_computes_boost():
+    # Without an override (e.g. bet365), the boost is still computed from the token.
+    r = compute_ev(4.30, 40, stake=25.0)
+    assert _close(r.boosted_decimal, 5.62)    # 1 + 3.30 * 1.4
+    assert _close(r.boosted_return, 140.50)
+
+
 def test_validation():
     bad_calls = [
         lambda: compute_ev(0.9, 50),               # decimal < 1
@@ -111,6 +133,7 @@ def test_validation():
         lambda: compute_ev(2.0, 50, stake=0),      # non-positive stake
         lambda: compute_ev(2.0, 50, fair_prob=1.5),
         lambda: compute_ev(2.0, 50, fair_prob=-0.1),
+        lambda: compute_ev(2.0, 50, boosted_decimal=0.9),  # boosted decimal < 1
     ]
     for call in bad_calls:
         try:

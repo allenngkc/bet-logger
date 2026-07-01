@@ -298,21 +298,24 @@ def combined_odds_decimal(data: dict) -> float:
 _BOOST_CONSISTENCY_REL_TOL = 0.05
 
 
-def resolve_boost(data: dict) -> tuple[float, float, str | None]:
-    """Resolve the PRE-boost combined odds + token % to feed ``compute_ev``.
+def resolve_boost(data: dict) -> tuple[float, float, float | None, str | None]:
+    """Resolve the PRE-boost combined odds, token %, and displayed boosted odds.
 
-    ``ev.compute_ev`` takes PRE-boost combined odds and applies the token boost
-    itself. Some books (FanDuel) print the ALREADY-boosted combined odds in
-    large type next to a struck-through original, so a naive read records the
-    boosted figure as ``combined_odds_decimal`` and the boost then gets applied
-    twice (a +198 slip showing $149 return is logged as a $198 return). This
-    reconciles the recorded original odds, the slip's displayed boosted odds
-    (``boosted_odds_decimal``), and the token so the boost is applied exactly
-    once.
+    ``ev.compute_ev`` records PRE-boost combined odds but pays out on the boosted
+    odds. Some books (FanDuel) print the ALREADY-boosted combined odds in large
+    type next to a struck-through original, so a naive read records the boosted
+    figure as ``combined_odds_decimal`` and the boost then gets applied twice (a
+    +198 slip showing $149 return is logged as a $198 return). This reconciles
+    the recorded original odds, the slip's displayed boosted odds
+    (``boosted_odds_decimal``), and the token.
 
-    Returns ``(pre_boost_combined_decimal, boost_pct, note)``. ``note`` is a
-    short human-readable string when we had to correct an already-boosted figure
-    (surfaced to the poster / logged), else ``None``.
+    Returns ``(pre_boost_combined_decimal, boost_pct, displayed_boosted, note)``.
+    ``displayed_boosted`` is the slip's OWN already-boosted combined odds when it
+    prints one — pass it to ``compute_ev`` so the payout rides on the book's
+    actual (rounded) boosted price rather than a recomputed one. It is ``None``
+    when the slip shows only a pre-boost price (e.g. bet365) and the boost must
+    be computed. ``note`` is a short human-readable string when we had to correct
+    an already-boosted figure (surfaced to the poster / logged), else ``None``.
 
     Raises:
         ExtractionError: if no usable odds (recorded, boosted, or leg) exist.
@@ -329,17 +332,19 @@ def resolve_boost(data: dict) -> tuple[float, float, str | None]:
     base = recorded if (recorded is not None and recorded > 0) else _leg_odds_product(data)
 
     # Nothing to reconcile: no active token, or no separately-shown boosted price.
+    # Without a displayed boosted price there's nothing to pay out on directly, so
+    # the boost (if any) is computed downstream -> displayed_boosted is None.
     if token <= 0 or boosted is None:
         chosen = base if base is not None else boosted
         if chosen is None:
             raise ExtractionError(
                 "no combined_odds_decimal and no usable leg odds to derive it"
             )
-        return chosen, token, None
+        return chosen, token, None, None
 
     # A token is active AND the slip shows a boosted price. Back out the pre-boost
-    # odds the boosted price implies, so compute_ev re-applying the token lands
-    # back on the slip's boosted price.
+    # odds the boosted price implies (for the record's combined_odds), but keep
+    # the displayed boosted price itself as the authoritative payout odds.
     factor = 1 + token / 100
     derived_base = 1 + (boosted - 1) / factor
 
@@ -347,6 +352,7 @@ def resolve_boost(data: dict) -> tuple[float, float, str | None]:
         return (
             derived_base,
             token,
+            boosted,
             "derived pre-boost odds from the slip's boosted price",
         )
 
@@ -354,12 +360,14 @@ def resolve_boost(data: dict) -> tuple[float, float, str | None]:
     # token reproduces the displayed boosted price, `base` is a genuine pre-boost
     # figure — trust it. Otherwise `base` is itself (near) the boosted price (the
     # double-count), so fall back to the price implied by the boosted figure.
+    # Either way the displayed boosted price is the real payout odds.
     expected_boosted = 1 + (base - 1) * factor
     if math.isclose(expected_boosted, boosted, rel_tol=_BOOST_CONSISTENCY_REL_TOL):
-        return base, token, None
+        return base, token, boosted, None
     return (
         derived_base,
         token,
+        boosted,
         "used the slip's boosted price (the recorded odds were already boosted)",
     )
 
@@ -382,7 +390,9 @@ if __name__ == "__main__":  # tiny smoke-test harness — needs ANTHROPIC_API_KE
 
     extracted = extract_bet(raw, guessed or _DEFAULT_MEDIA_TYPE, caption_arg)
     print(json.dumps(extracted, indent=2, ensure_ascii=False))
-    pre_boost, boost_pct, note = resolve_boost(extracted)
+    pre_boost, boost_pct, displayed_boosted, note = resolve_boost(extracted)
     print(f"\nresolved pre-boost odds -> {pre_boost:.4f}  (token {boost_pct:g}%)")
+    if displayed_boosted is not None:
+        print(f"displayed boosted odds -> {displayed_boosted:.4f}  (paid out on directly)")
     if note:
         print(f"boost note -> {note}")
