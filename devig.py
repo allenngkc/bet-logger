@@ -130,6 +130,33 @@ def all_legs_priced(legs: object) -> bool:
     return found
 
 
+def with_combined_fallback(legs: object, combined_decimal: object) -> object:
+    """Fill a lone unpriced leg's odds from the combined price (single bets only).
+
+    For a SINGLE-leg straight bet the combined odds ARE that leg's odds, so if the
+    model didn't price the lone leg we can still de-vig it — using
+    ``combined_decimal`` as the leg's price — instead of reporting 0 EV (a common
+    case: a straight bet with a profit token). Returns a NEW legs list with the
+    filled odds in that one case; otherwise returns ``legs`` unchanged (never
+    mutates the input).
+
+    Deliberately a no-op for 2+ legs: a parlay's combined price must not be split
+    or duplicated across legs (that fabricates a fair prob), so a multi-leg parlay
+    whose per-leg odds are missing still fails ``all_legs_priced`` and reports 0
+    EV. Also a no-op when the lone leg is already priced (its own odds win) or when
+    ``combined_decimal`` isn't a usable price (> 1.0).
+    """
+    if not isinstance(legs, list) or len(legs) != 1:
+        return legs
+    leg = legs[0]
+    if not isinstance(leg, dict) or _usable_odds(leg.get("odds_decimal")) is not None:
+        return legs
+    combined = _usable_odds(combined_decimal)
+    if combined is None:
+        return legs
+    return [{**leg, "odds_decimal": combined}]
+
+
 def same_game(legs: object) -> bool:
     """True if two or more legs share the same (normalised) event.
 

@@ -499,6 +499,12 @@ def main() -> None:
                 # Fair prob is estimated by de-vigging each leg (per its
                 # market_category) and multiplying — see devig.py.
                 legs = data.get("legs")
+                # A single-leg straight bet's combined odds ARE its one leg's
+                # odds, so if the model didn't price that lone leg, fall back to
+                # the (pre-boost) combined price and still compute EV. Parlays
+                # (2+ legs) are untouched — a combined price is never split across
+                # legs (that would fabricate a fair prob).
+                legs = devig.with_combined_fallback(legs, combined)
                 # EV is only counted when every leg has odds to de-vig; if any
                 # leg's odds are missing we report 0 EV rather than guess from a
                 # partial parlay (see compute_ev's fair_prob=None branch).

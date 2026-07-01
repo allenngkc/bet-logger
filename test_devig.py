@@ -101,6 +101,48 @@ def test_all_legs_priced():
     assert devig.all_legs_priced(None) is False
 
 
+def test_with_combined_fallback_single_unpriced_leg():
+    # The reported edge case: a single-leg straight bet whose lone leg the model
+    # left unpriced (only the combined 4.3 was read). The combined price IS the
+    # leg's price, so fill it in and let EV be computed instead of the 0-EV path.
+    legs = [{"event": "Netherlands v Morocco", "selection": "Draw",
+             "market_category": "soccer_1x2"}]
+    filled = devig.with_combined_fallback(legs, 4.3)
+    assert devig.all_legs_priced(filled) is True
+    assert _close(filled[0]["odds_decimal"], 4.3)
+    # Input is not mutated — the fallback returns a new list.
+    assert "odds_decimal" not in legs[0]
+    assert _close(devig.parlay_fair_prob(filled), devig.devig_prob(4.3, "soccer_1x2"))
+
+
+def test_with_combined_fallback_prefers_leg_own_odds():
+    # If the lone leg is already priced, its own odds win — combined is ignored.
+    legs = [{"selection": "Draw", "market_category": "soccer_1x2", "odds_decimal": 4.5}]
+    filled = devig.with_combined_fallback(legs, 4.3)
+    assert filled is legs and _close(filled[0]["odds_decimal"], 4.5)
+
+
+def test_with_combined_fallback_ignores_parlays():
+    # 2+ legs: never split/duplicate the combined price across legs. An unpriced
+    # parlay stays unpriced -> 0 EV.
+    legs = [
+        {"selection": "A", "market_category": "soccer_1x2"},
+        {"selection": "B", "market_category": "totals_handicap"},
+    ]
+    assert devig.with_combined_fallback(legs, 6.0) is legs
+    assert devig.all_legs_priced(devig.with_combined_fallback(legs, 6.0)) is False
+
+
+def test_with_combined_fallback_no_usable_combined():
+    # No usable combined price (<= 1.0 or None) -> nothing to fall back to.
+    legs = [{"selection": "Draw", "market_category": "soccer_1x2"}]
+    assert devig.with_combined_fallback(legs, 1.0) is legs
+    assert devig.with_combined_fallback(legs, None) is legs
+    # Non-list / empty inputs pass through unchanged.
+    assert devig.with_combined_fallback([], 4.3) == []
+    assert devig.with_combined_fallback(None, 4.3) is None
+
+
 def test_same_game_detection():
     legs = [
         {"event": "Spain v France", "odds_decimal": 1.5},

@@ -7,6 +7,7 @@ Run either way:
 
 import bot
 import devig
+import extractor
 import sheets
 from ev import compute_ev
 
@@ -184,6 +185,30 @@ def test_sgp_with_visible_leg_odds_is_leveraged():
         screenshot_url="", channel_id=1, message_id=2, same_game=True,
     )
     assert "@ 1.8" in row["leg1"] and "@ 2.1" in row["leg2"]
+
+
+def test_straight_bet_unpriced_leg_uses_combined_for_ev():
+    # The reported edge case, end-to-end through handle_slip's sequence: a
+    # single-leg straight bet with a profit token whose lone leg the model left
+    # unpriced (only the combined 4.30 / boosted 5.65 were read). The combined
+    # odds ARE the leg's odds, so the fallback fills them and EV is computed as
+    # +EV — not the 0-EV "leg odds missing" path.
+    data = {
+        "stake": 25, "combined_odds_decimal": 4.30, "boosted_odds_decimal": 5.65,
+        "token_pct": 40,
+        "legs": [{"event": "Netherlands v Morocco", "selection": "Draw",
+                  "market_category": "soccer_1x2"}],
+    }
+    combined, boost_pct, displayed_boosted, _ = extractor.resolve_boost(data)
+    legs = devig.with_combined_fallback(data["legs"], combined)
+    assert devig.all_legs_priced(legs) is True
+    fair = devig.parlay_fair_prob(legs)
+    ev = compute_ev(
+        combined, boost_pct, stake=25.0, fair_prob=fair,
+        boosted_decimal=displayed_boosted,
+    )
+    assert ev.flag == "+EV" and ev.ev_per_unit > 0
+    assert abs(ev.boosted_return - 141.25) < 1e-9   # still pays on the book's odds
 
 
 def test_unpriced_sgp_legs_report_zero_ev():
